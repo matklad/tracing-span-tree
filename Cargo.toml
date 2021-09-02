@@ -1,0 +1,19 @@
+[package]
+name = "tracing-span-tree"
+version = "0.1.0"
+description = "Simple tracing subscriber for hierarchical profiling"
+categories = []
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/matklad/tracing-span-tree"
+authors = ["Aleksey Kladov <aleksey.kladov@gmail.com>"]
+edition = "2018"
+
+exclude = [".github/", "bors.toml", "rustfmt.toml"]
+
+[workspace]
+members = ["xtask"]
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = "0.2"
+
