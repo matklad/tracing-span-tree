@@ -1,6 +1,6 @@
 [package]
 name = "tracing-span-tree"
-version = "0.1.0"
+version = "0.1.1"
 description = "Simple tracing subscriber for hierarchical profiling"
 categories = []
 license = "MIT OR Apache-2.0"
@@ -15,5 +15,4 @@ members = ["xtask"]
 
 [dependencies]
 tracing = "0.1"
-tracing-subscriber = "0.2"
-
+tracing-subscriber = "0.3"
