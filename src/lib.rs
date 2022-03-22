@@ -95,7 +95,7 @@ impl<S> Layer<S> for SpanTree
 where
     S: Subscriber + for<'span> LookupSpan<'span> + fmt::Debug,
 {
-    fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<S>) {
+    fn on_new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<S>) {
         let span = ctx.span(id).unwrap();
 
         let data = Data::new(attrs);
@@ -109,9 +109,8 @@ where
         let data = span.extensions_mut().remove::<Data>().unwrap();
         let mut node = data.into_node(span.name());
 
-        match span.parent_id() {
-            Some(parent_id) => {
-                let parent_span = ctx.span(parent_id).unwrap();
+        match span.parent() {
+            Some(parent_span) => {
                 parent_span.extensions_mut().get_mut::<Data>().unwrap().children.push(node);
             }
             None => {
