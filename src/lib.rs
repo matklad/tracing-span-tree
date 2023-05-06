@@ -40,7 +40,7 @@ use tracing::{
     debug,
     field::{Field, Visit},
     span::Attributes,
-    Event, Id, Subscriber,
+    Event, Id, Metadata, Subscriber,
 };
 use tracing_subscriber::{
     layer::Context,
@@ -56,6 +56,7 @@ pub fn span_tree() -> SpanTree {
 #[derive(Default)]
 pub struct SpanTree {
     aggregate: bool,
+    formatter: Option<Box<dyn Fn(&Metadata) -> String + Send + Sync>>,
 }
 
 impl SpanTree {
@@ -63,6 +64,15 @@ impl SpanTree {
     pub fn aggregate(self, yes: bool) -> SpanTree {
         SpanTree { aggregate: yes, ..self }
     }
+
+    /// Set a custom formatter for spans
+    pub fn with_formatter_fn(
+        self,
+        formatter: impl Fn(&Metadata) -> String + Send + Sync + 'static,
+    ) -> SpanTree {
+        SpanTree { formatter: Some(Box::new(formatter)), ..self }
+    }
+
     /// Set as a global subscriber
     pub fn enable(self) {
         let subscriber = Registry::default().with(self);
@@ -82,7 +92,7 @@ impl Data {
         attrs.record(&mut span);
         span
     }
-    fn into_node(self, name: &'static str) -> Node {
+    fn into_node(self, name: String) -> Node {
         Node { name, count: 1, duration: self.start.elapsed(), children: self.children }
     }
 }
@@ -107,7 +117,14 @@ where
     fn on_close(&self, id: Id, ctx: Context<S>) {
         let span = ctx.span(&id).unwrap();
         let data = span.extensions_mut().remove::<Data>().unwrap();
-        let mut node = data.into_node(span.name());
+
+        let name = if let Some(formatter) = &self.formatter {
+            formatter(span.metadata())
+        } else {
+            span.name().to_owned()
+        };
+
+        let mut node = data.into_node(name);
 
         match span.parent() {
             Some(parent_span) => {
@@ -125,7 +142,7 @@ where
 
 #[derive(Default)]
 struct Node {
-    name: &'static str,
+    name: String,
     count: u32,
     duration: Duration,
     children: Vec<Node>,
@@ -164,7 +181,7 @@ impl Node {
             return;
         }
 
-        self.children.sort_by_key(|it| it.name);
+        self.children.sort_by_cached_key(|it| it.name.clone());
         let mut idx = 0;
         for i in 1..self.children.len() {
             if self.children[idx].name == self.children[i].name {
