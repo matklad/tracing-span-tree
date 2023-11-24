@@ -14,5 +14,6 @@ exclude = [".github/", "bors.toml", "rustfmt.toml"]
 members = ["xtask"]
 
 [dependencies]
+console = "0.15.7"
 tracing = "0.1"
 tracing-subscriber = "0.3"

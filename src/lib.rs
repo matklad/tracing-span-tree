@@ -32,10 +32,14 @@
 //! ```
 
 use std::{
-    fmt, mem,
+    any::TypeId,
+    fmt,
+    io::{self, Stderr, Write as _},
+    mem,
     time::{Duration, Instant},
 };
 
+use console::Style;
 use tracing::{
     debug,
     field::{Field, Visit},
@@ -43,25 +47,65 @@ use tracing::{
     Event, Id, Subscriber,
 };
 use tracing_subscriber::{
+    fmt::MakeWriter,
     layer::Context,
     prelude::*,
     registry::{LookupSpan, Registry},
     Layer,
 };
 
+/// https://github.com/rust-lang/rust/issues/92698
+///
+
+macro_rules! let_workaround {
+    (let $name:ident = $val:expr; $($rest:tt)+) => {
+        match $val {
+            $name => {
+                let_workaround! { $($rest)+ }
+            }
+        }
+    };
+    ($($rest:tt)+) => { $($rest)+ }
+}
+
+macro_rules! select {
+    ($cond:expr, $iftrue:expr, $iffalse:expr) => {
+        'outer: {
+            (
+                'inner: {
+                    if $cond {
+                        break 'inner;
+                    }
+                    break 'outer $iffalse;
+                },
+                $iftrue,
+            )
+                .1
+        }
+    };
+}
+
 pub fn span_tree() -> SpanTree {
-    SpanTree::default()
+    SpanTree { aggregate: false, writer: io::stderr }
+}
+
+pub fn span_tree_with<W: for<'a> MakeWriter<'a>>(writer: W) -> SpanTree<W> {
+    SpanTree { aggregate: false, writer }
 }
 
 #[derive(Default)]
-pub struct SpanTree {
+pub struct SpanTree<W = fn() -> Stderr> {
     aggregate: bool,
+    writer: W,
 }
 
-impl SpanTree {
+impl<W> SpanTree<W>
+where
+    W: for<'a> MakeWriter<'a> + Send + Sync + 'static,
+{
     /// Merge identical sibling spans together.
-    pub fn aggregate(self, yes: bool) -> SpanTree {
-        SpanTree { aggregate: yes, ..self }
+    pub fn aggregate(self, yes: bool) -> Self {
+        Self { aggregate: yes, ..self }
     }
     /// Set as a global subscriber
     pub fn enable(self) {
@@ -91,9 +135,10 @@ impl Visit for Data {
     fn record_debug(&mut self, _field: &Field, _value: &dyn fmt::Debug) {}
 }
 
-impl<S> Layer<S> for SpanTree
+impl<S, W> Layer<S> for SpanTree<W>
 where
-    S: Subscriber + for<'span> LookupSpan<'span> + fmt::Debug,
+    W: for<'a> MakeWriter<'a> + 'static,
+    S: Subscriber + for<'span> LookupSpan<'span>,
 {
     fn on_new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<S>) {
         let span = ctx.span(id).unwrap();
@@ -113,12 +158,7 @@ where
             Some(parent_span) => {
                 parent_span.extensions_mut().get_mut::<Data>().unwrap().children.push(node);
             }
-            None => {
-                if self.aggregate {
-                    node.aggregate()
-                }
-                node.print()
-            }
+            None => node.print(self.aggregate, &self.writer),
         }
     }
 }
@@ -131,31 +171,51 @@ struct Node {
     children: Vec<Node>,
 }
 
-impl Node {
-    fn print(&self) {
-        self.go(0)
+fn mk_style<'a, W: MakeWriter<'a>>() -> Style
+where
+    W::Writer: 'static,
+{
+    if TypeId::of::<W::Writer>() == TypeId::of::<io::Stderr>() {
+        Style::new().for_stdout()
+    } else if TypeId::of::<W::Writer>() == TypeId::of::<io::Stderr>() {
+        Style::new().for_stderr()
+    } else {
+        Style::new().force_styling(false)
     }
-    fn go(&self, level: usize) {
-        let bold = "\u{001b}[1m";
-        let reset = "\u{001b}[0m";
+}
 
-        let duration = format!("{:3.2?}", self.duration);
-        let count = if self.count > 1 { self.count.to_string() } else { String::new() };
-        eprintln!(
-            "{:width$}  {:<9} {:<6} {bold}{}{reset}",
-            "",
-            duration,
-            count,
-            self.name,
-            bold = bold,
-            reset = reset,
-            width = level * 2
-        );
+impl Node {
+    fn print<W: for<'a> MakeWriter<'a> + 'static>(&mut self, agg: bool, writer: &W) {
+        if agg {
+            self.aggregate()
+        }
+        self.go(0, writer)
+    }
+    fn go<W: for<'a> MakeWriter<'a> + 'static>(&self, level: usize, writer: &W) {
+        let width = level * 2;
+        let style = mk_style::<W>();
+        let name = style.apply_to(self.name).bold();
+
+        // avoid intermediate allocations
+        let_workaround! {
+            let c = self.count;
+            let count = select!(self.count > 1, format_args!(" {c:<6} "), format_args!(" "));
+
+            let d = self.duration;
+            let duration = format_args!(" {d:3.2?} ");
+
+            let _ = writeln!(
+                writer.make_writer(),
+                "{s:width$}{duration:<9}{count}{name}",
+                s = "",
+            );
+        }
+
         for child in &self.children {
-            child.go(level + 1)
+            child.go(level + 1, writer)
         }
         if level == 0 {
-            eprintln!()
+            let _ = writeln!(writer.make_writer());
         }
     }
 
