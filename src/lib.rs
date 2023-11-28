@@ -39,7 +39,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use console::Style;
 use tracing::{
     debug,
     field::{Field, Visit},
@@ -54,10 +53,28 @@ use tracing_subscriber::{
     Layer,
 };
 
+const BOLD: &str = "\u{001b}[1m";
+const RESET: &str = "\u{001b}[0m";
+
 /// https://github.com/rust-lang/rust/issues/92698
 ///
 
 macro_rules! let_workaround {
+    (let $name:ident = style!($t:path, $c:ident, $s:expr); $($rest:tt)+) => {
+        let_workaround! {
+            let $name = select!(should_style::<$t>(), format_args!("{}{}{RESET}", $c, $s), format_args!("{}", $s));
+            $($rest)+
+        }
+    };
+
+    (let $name:ident = select!($cond:expr, $iftrue:expr, $iffalse:expr); $($rest:tt)+) => {
+        select!(
+            $cond,
+            let_workaround!{let $name = $iftrue; $($rest)+},
+            let_workaround!{let $name = $iffalse; $($rest)+}
+        )
+    };
+
     (let $name:ident = $val:expr; $($rest:tt)+) => {
         match $val {
             $name => {
@@ -171,16 +188,17 @@ struct Node {
     children: Vec<Node>,
 }
 
-fn mk_style<'a, W: MakeWriter<'a>>() -> Style
+fn should_style<'a, W>() -> bool
 where
+    W: MakeWriter<'a>,
     W::Writer: 'static,
 {
     if TypeId::of::<W::Writer>() == TypeId::of::<io::Stderr>() {
-        Style::new().for_stdout()
+        true
     } else if TypeId::of::<W::Writer>() == TypeId::of::<io::Stderr>() {
-        Style::new().for_stderr()
+        true
     } else {
-        Style::new().force_styling(false)
+        false
     }
 }
 
@@ -193,16 +211,14 @@ impl Node {
     }
     fn go<W: for<'a> MakeWriter<'a> + 'static>(&self, level: usize, writer: &W) {
         let width = level * 2;
-        let style = mk_style::<W>();
-        let name = style.apply_to(self.name).bold();
+
+        let Self { name, count, duration, .. } = self;
 
         // avoid intermediate allocations
         let_workaround! {
-            let c = self.count;
-            let count = select!(self.count > 1, format_args!(" {c:<6} "), format_args!(" "));
-
-            let d = self.duration;
-            let duration = format_args!(" {d:3.2?} ");
+            let name = style!(W, BOLD, name);
+            let count = select!(*count > 1, format_args!(" {count:<6} "), format_args!(" "));
+            let duration = format_args!(" {duration:3.2?} ");
 
             let _ = writeln!(
                 writer.make_writer(),
